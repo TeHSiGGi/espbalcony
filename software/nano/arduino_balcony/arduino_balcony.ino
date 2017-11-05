@@ -2,87 +2,80 @@
 #include <BME280I2C.h>
 #include <M2M_LM75A.h>
 #include <INA219.h>
-#include <Wire.h>             // Needed for legacy versions of Arduino.
+#include <Wire.h>
 #include <FreqCount.h>
 /* ====  END Includes ==== */
 
 /* ==== Defines ==== */
+// BAUD RATE FOR COMMUNICATION
 #define SERIAL_BAUD 9600
-/* ==== END Defines ==== */
-
-/* ==== Global Variables ==== */
-BME280I2C bme;                   // Default : forced mode, standby time = 1000 ms
-// Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off,
-
-M2M_LM75A lm75a;
-
-#define SENSOR_ADDR  (0x90 >> 1)
-
-bool metric = true;
-/* ==== END Global Variables ==== */
-
-/*
-   INA219
-*/
-
-// Current sensor and shunt used
-INA219 ina219_input(0x45);
-INA219 ina219_system(0x40);
-
+// INA219 SPECIFICATIONS, R_SHUNT IS 0.002 Ohms, Max expected voltage over R_SHUNT IS 40mV, Max BUS Voltage is 32V, Max Current 20A
 #define R_SHUNT 0.002
 #define V_SHUNT_MAX 0.04
 #define V_BUS_MAX 32
 #define I_MAX_EXPECTED 20
+// GPIO Pin 8 is for providing +5V to external I/O via MOSFET. Output is inverted GPIO8: HIGH <> +5V External LOW
 #define EXTERNAL_IO 8
+// MUX Control Line mappings for input selection
 #define MUX_A 11
 #define MUX_B 12
 #define MUX_C 10
 #define MUX_D 9
+// Sensor Address for LM75, results in 0x48
+#define SENSOR_ADDR  (0x90 >> 1)
+/* ==== END Defines ==== */
 
-// current and voltage readings
-float shuntvoltage_input = 0;
-float busvoltage_input= 0;
-float current_A_input = 0;
-float batvoltage_input = 0;
-float power_input = 0;
-
-/* ==== Prototypes ==== */
-/* === Print a message to stream with the temp, humidity and pressure. === */
-void printBME280Data(Stream * client);
-/* === Print a message to stream with the altitude, and dew point. === */
-void printBME280CalculatedData(Stream* client);
-/* ==== END Prototypes ==== */
+/* ==== Global Variables ==== */
+// BME Sensor
+BME280I2C bme;                 
+// LM75 Sensor
+M2M_LM75A lm75a;
+// Input Power Measurement INA219
+INA219 ina219_input(0x45);
+// System Power Measurement INA219
+INA219 ina219_system(0x40);
+// Usage of metric values for BME Sensor
+bool metric = true;
+/* ==== END Global Variables ==== */
 
 /* ==== Setup ==== */
 void setup() {
   //save some power
   ADCSRA = ADCSRA & B01111111;
   ACSR = B10000000;
-  //setup
+  //INA 219 for Input Measurement
   ina219_input.begin();
   ina219_input.configure(INA219::RANGE_32V, INA219::GAIN_1_40MV, INA219::ADC_64SAMP, INA219::ADC_64SAMP, INA219::CONT_SH_BUS);
   ina219_input.calibrate(R_SHUNT, V_SHUNT_MAX, V_BUS_MAX, I_MAX_EXPECTED);
+  //INA 219 for System Measurement
   ina219_system.begin();
   ina219_system.configure(INA219::RANGE_16V, INA219::GAIN_1_40MV, INA219::ADC_64SAMP, INA219::ADC_64SAMP, INA219::CONT_SH_BUS);
   ina219_system.calibrate(R_SHUNT, V_SHUNT_MAX, V_BUS_MAX, I_MAX_EXPECTED);
+  //LM75 for mainboard temperature
   lm75a.begin();
+  //Shutdown LM75 until needed
   lm75a.shutdown();
-  //external power control
+  //external power control GPIO
   pinMode(EXTERNAL_IO, OUTPUT);
+  //disable external power until needed
   digitalWrite(EXTERNAL_IO, 1);
-  //setup Mux I/O
+  //setup Mux I/O for input choosing
   pinMode(MUX_A, OUTPUT);
   pinMode(MUX_B, OUTPUT);
   pinMode(MUX_C, OUTPUT);
   pinMode(MUX_D, OUTPUT);
+  //init UART for communication
   Serial.begin(SERIAL_BAUD);
-  while (!Serial) {} // Wait
+  //wait until UART is available
+  while (!Serial) {}
+  //wait until BME is available
   while (!bme.begin()) {
     delay(1000);
   }
 }
 /* ==== END Setup ==== */
 
+/* getSensorData - retrieve BME Sensor Data and Output via UART*/
 void getSensorData() {
   float temp(NAN), hum(NAN), pres(NAN);
   uint8_t pressureUnit(3);
@@ -92,6 +85,7 @@ void getSensorData() {
   Serial.println(String(temp, 2) + ";" + String(hum, 2) + ";" + String(pres, 2) + ";" + String(altitude, 1) + ";" + String(dewPoint, 2));
 }
 
+/* getSystemPower - retrieve INA219 data and output via UART */
 void getSystemPower() {
   Serial.print(ina219_system.shuntCurrent() * 1000, 4);
   Serial.print(";");  
@@ -101,6 +95,7 @@ void getSystemPower() {
   Serial.println();
 }
 
+/* getSolarPower - retrieve INA219 data and output via UART */
 void getSolarPower() {
   Serial.print(ina219_input.shuntCurrent() * 1000, 4);
   Serial.print(";");  
@@ -110,22 +105,20 @@ void getSolarPower() {
   Serial.println();
 }
 
+/* getSystemTemp - retrieve LM75 temperaturevalue and output via UART */
 void getSystemTemp() {
   lm75a.wakeup();
   Serial.println(lm75a.getTemperature());
   lm75a.shutdown();
 }
 
+/* debugIIC - scan I²C bus for existing devices, used for debugging of hardware in development state. */
 void debugIIC() {
   Serial.println("Scanning...");
-
   byte error, address;
   int nDevices;
   for (address = 1; address < 127; address++ )
   {
-    // The i2c_scanner uses the return value of
-    // the Write.endTransmisstion to see if
-    // a device did acknowledge to the address.
     Wire.beginTransmission(address);
     error = Wire.endTransmission();
 
@@ -136,7 +129,6 @@ void debugIIC() {
         Serial.print("0");
       Serial.print(address, HEX);
       Serial.println("  !");
-
       nDevices++;
     }
     else if (error == 4)
@@ -153,6 +145,7 @@ void debugIIC() {
     Serial.println("done\n");
 }
 
+/* debugExternal - used to manually set the power of the external I/O for debugging of hardware in development state. */
 void debugExternal(boolean state){
   Serial.println("Debug external\n");
   Serial.println(state);
@@ -163,6 +156,7 @@ void debugExternal(boolean state){
   }
 }
 
+/* debugFrequency - used to test channel 7 (sensor 8) using MUX for debugging of hardware in development state. */
 void debugFrequency(){
   Serial.println("Debug frequency");
   digitalWrite(MUX_A, 1);
